@@ -1,0 +1,131 @@
+---
+- name: Setup WordPress on EC2
+  hosts: wordpress
+  become: yes
+  tasks:
+
+    - name: Update and install necessary packages
+      apt:
+        name:
+          - apache2
+          - php
+          - php-mysql
+          - mariadb-server
+          - python3-pymysql
+          - wget
+          - unzip
+        state: present
+        update_cache: yes
+
+    - name: Start and enable Apache2
+      service:
+        name: apache2
+        state: started
+        enabled: yes
+
+    - name: Start and enable MariaDB (MySQL) service
+      service:
+        name: mariadb
+        state: started
+        enabled: yes
+
+    - name: Create MySQL admin user (non-root)
+      mysql_user:
+        name: wordpress
+        password: wordpress
+        priv: '*.*:ALL,GRANT'
+        host: '%'
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    - name: Create WordPress database
+      mysql_db:
+        name: wordpress_db
+        state: present
+        login_user: wordpress
+        login_password: wordpress
+
+    - name: Create WordPress user
+      mysql_user:
+        name: Bintang
+        password: Bintang
+        priv: "wordpress_db.*:ALL"
+        host: '%'
+        state: present
+        login_user: wordpress
+        login_password: wordpress
+
+    - name: Download WordPress using wget
+      shell: wget --no-check-certificate https://wordpress.org/latest.tar.gz -O /tmp/wordpress.tar.gz
+
+    - name: Extract WordPress
+      unarchive:
+        src: /tmp/wordpress.tar.gz
+        dest: /var/www/html/
+        remote_src: yes
+        creates: /var/www/html/wordpress
+
+    - name: Set ownership of WordPress files
+      file:
+        path: /var/www/html/
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Copy wp-config-sample.php to wp-config.php
+      command: cp /var/www/html/wordpress/wp-config-sample.php /var/www/html/wordpress/wp-config.php
+      args:
+        creates: /var/www/html/wordpress/wp-config.php
+
+    - name: Configure wp-config.php
+      lineinfile:
+        path: /var/www/html/wordpress/wp-config.php
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+      loop:
+        - { regexp: 'DB_NAME', line: "define('DB_NAME', 'wordpress_db');" }
+        - { regexp: 'DB_USER', line: "define('DB_USER', 'Bintang');" }
+        - { regexp: 'DB_PASSWORD', line: "define('DB_PASSWORD', 'Bintang');" }
+        - { regexp: 'DB_HOST', line: "define('DB_HOST', 'localhost');" }
+
+    - name: Allow Apache override for WordPress
+      blockinfile:
+        path: /etc/apache2/apache2.conf
+        block: |
+          <Directory /var/www/html/wordpress/>
+              AllowOverride All
+          </Directory>
+
+    - name: Enable Apache rewrite module
+      command: a2enmod rewrite
+
+    - name: Remove existing 000-default.conf
+      file:
+        path: /etc/apache2/sites-available/000-default.conf
+        state: absent
+
+    - name: Create new 000-default.conf with WordPress path
+      copy:
+        dest: /etc/apache2/sites-available/000-default.conf
+        content: |
+          <VirtualHost *:80>
+              ServerAdmin admin@example.com
+              DocumentRoot /var/www/html/wordpress
+
+              <Directory /var/www/html/wordpress>
+                  Options Indexes FollowSymLinks
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+
+              ErrorLog ${APACHE_LOG_DIR}/error.log
+              CustomLog ${APACHE_LOG_DIR}/access.log combined
+          </VirtualHost>
+
+    - name: Enable the new site configuration
+      command: a2ensite 000-default.conf
+
+    - name: Restart Apache to apply changes
+      service:
+        name: apache2
+        state: restarted

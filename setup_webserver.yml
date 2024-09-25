@@ -1,0 +1,104 @@
+---
+- name: Setup Web Server on EC2
+  hosts: webserver
+  become: yes
+  vars:
+    db_name: blog
+    db_user: blog
+    db_password: blog
+    repo_url: "https://github.com/danial-smktelkom-mlg/blog.git"
+    sql_file_path: "db.sql"
+    project_path: "/var/www/html/blog"
+
+  tasks:
+    # Update package repository and install required packages
+    - name: Install Apache, MariaDB, Git, PHP, and MySQL dependencies
+      apt:
+        name:
+          - apache2
+          - mariadb-server
+          - git
+          - python3-pymysql
+          - php
+          - php-mysqli      # Added MySQLi extension
+          - php-mysql       # Added MySQL extension
+        update_cache: yes
+        state: present
+
+    # Ensure services are started
+    - name: Ensure Apache2 and MariaDB are running
+      service:
+        name: "{{ item }}"
+        state: started
+        enabled: yes
+      loop:
+        - apache2
+        - mariadb
+
+    # Create MySQL database (use socket authentication)
+    - name: Create MySQL database
+      mysql_db:
+        name: "{{ db_name }}"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    # Create MySQL user (use socket authentication)
+    - name: Create MySQL user with privileges
+      mysql_user:
+        name: "{{ db_user }}"
+        password: "{{ db_password }}"
+        priv: "{{ db_name }}.*:ALL"
+        state: present
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    # Clone GitHub repository
+    - name: Clone GitHub repository
+      git:
+        repo: "{{ repo_url }}"
+        dest: "{{ project_path }}"
+        version: main   # Changed 'master' to 'main'
+
+    # Import SQL file to the database (use socket authentication)
+    - name: Import SQL file to MySQL database
+      mysql_db:
+        name: "{{ db_name }}"
+        state: import
+        target: "{{ project_path }}/{{ sql_file_path }}"
+        login_user: "{{ db_user }}"
+        login_password: "{{ db_password }}"
+        login_unix_socket: /var/run/mysqld/mysqld.sock
+
+    # Remove existing 000-default.conf
+    - name: Remove existing 000-default.conf
+      file:
+        path: /etc/apache2/sites-available/000-default.conf
+        state: absent
+
+    # Create a new 000-default.conf with DocumentRoot
+    - name: Create new 000-default.conf
+      copy:
+        dest: /etc/apache2/sites-available/000-default.conf
+        content: |
+          <VirtualHost *:80>
+              DocumentRoot {{ project_path }}
+              <Directory {{ project_path }}>
+                  AllowOverride All
+                  Require all granted
+              </Directory>
+              ErrorLog ${APACHE_LOG_DIR}/error.log
+              CustomLog ${APACHE_LOG_DIR}/access.log combined
+          </VirtualHost>
+      notify:
+        - Restart Apache2
+
+    # Restart Apache2
+    - name: Restart Apache2
+      service:
+        name: apache2
+        state: restarted
+
+  handlers:
+    - name: Restart Apache2
+      service:
+        name: apache2
+        state: restarted
